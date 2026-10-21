@@ -1,0 +1,71 @@
+name: Portable CLI (no AVX)
+
+# Builds the ptts command for x86-64 CPUs without AVX/AVX2 (e.g. Intel Celeron N4100).
+# The upstream release binary is built with -C target-cpu=x86-64-v3, which crashes with
+# SIGILL on those machines. Manual trigger only; uploads artifacts, no releases.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cli-portable.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-portable:
+    name: ptts portable / ${{ matrix.cpu }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cpu: goldmont
+          - cpu: x86-64
+    env:
+      RUSTFLAGS: '-C target-cpu=${{ matrix.cpu }}'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Remove the local cargo config (it pins target-cpu=native)
+        run: rm -f .cargo/config.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: portable-${{ matrix.cpu }}
+
+      - name: Build the command
+        run: cargo build --release --locked -p ptts --features cli --bin ptts
+
+      - name: Verify no AVX instructions leaked in
+        run: |
+          set -euo pipefail
+          if objdump -d target/release/ptts | grep -q '%ymm'; then
+            echo "::error::binary contains AVX (ymm) instructions"
+            exit 1
+          fi
+          echo "OK: no AVX instructions"
+
+      - name: Package and smoke test
+        run: |
+          set -euo pipefail
+          version=$(target/release/ptts --version)
+          echo "version: $version"
+          mkdir -p dist/ptts-portable
+          cp target/release/ptts dist/ptts-portable/ptts
+          cp LICENSE-MIT LICENSE-APACHE dist/ptts-portable/
+          tar -C dist -czf "dist/ptts-portable-${{ matrix.cpu }}-x86_64-unknown-linux-gnu.tar.gz" ptts-portable
+          (cd dist && sha256sum ./*.tar.gz > "SHA256SUMS-${{ matrix.cpu }}")
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ptts-portable-${{ matrix.cpu }}
+          path: dist/*
+          if-no-files-found: error
